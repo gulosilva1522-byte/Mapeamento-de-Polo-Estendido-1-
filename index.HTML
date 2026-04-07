@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Expansão RDSL 2026</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.31.0/build/stlite.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.31.0/build/stlite.js"></script>
+    <script>
+      stlite.mount({
+        // Adicionamos 'openpyxl' explicitamente nos requisitos
+        requirements: ["pandas", "plotly", "openpyxl"],
+        entrypoint: "streamlit_app.py",
+        files: {
+          "streamlit_app.py": `
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+
+Nome_colunas = {
+    "TX_NOME": "Nome da Filial",
+    "TX_BAND": "Bandeira",
+    "NM_STATUS": "Status Atual",
+    "TX_MUNICIPIO": "Município",
+    "TX_UF": "UF",
+    "FORMATO": "Formato da Loja",
+    "NM_JAVA": "Java",
+    "TX_PERFIL": "Perfil da Loja",
+    "STATUS_REFORMA_2026": "Status da Reforma 2026",
+    "OTD_FORMATADO": "OTD C (%)", 
+}
+
+st.set_page_config(layout="wide", page_title="Expansão RDSL 2026")
+
+st.sidebar.header("📂 Configurações")
+arquivo_upload = st.sidebar.file_uploader("Carregue o arquivo Excel", type=["xlsx"])
+
+@st.cache_data
+def processar_dados(df):
+    # Limpeza de coordenadas
+    df = df.dropna(subset=['Latitude', 'Longitude'])
+    df['Latitude'] = pd.to_numeric(df['Latitude'], errors='coerce')
+    df['Longitude'] = pd.to_numeric(df['Longitude'], errors='coerce')
+    df = df.dropna(subset=['Latitude', 'Longitude'])
+    
+    # Tratamento do OTD para Porcentagem (Resolve o problema dos decimais longos)
+    if 'OTD C' in df.columns:
+        df['OTD_FORMATADO'] = (pd.to_numeric(df['OTD C'], errors='coerce') * 100).map('{:.1f}%'.format)
+    
+    # Lógica de Status
+    def definir_status(row):
+        if pd.notna(row.get('DT_FECHAMENTO')): return "Filial Fechada"
+        if pd.notna(pd.to_datetime(row.get('STATUS_REFORMA_2026'), errors='coerce')): return "Reforma Programada (2026)"
+        if pd.isna(row.get('DT_ABERTURA')): return "Inaugurações 2026 (A definir data)"
+        return "Operação Normal"
+
+    df['STATUS_ESTRATEGICO'] = df.apply(definir_status, axis=1)
+    return df
+
+if arquivo_upload:
+    try:
+        # AQUI ESTÁ A CORREÇÃO: Forçamos o motor 'openpyxl' para ignorar o pyarrow
+        df_raw = pd.read_excel(arquivo_upload, engine='openpyxl')
+        df_raw.columns = df_raw.columns.str.strip()
+        df = processar_dados(df_raw)
+
+        # Filtros
+        with st.sidebar.form("filtros_form"):
+            st.write("### 🔍 Filtros")
+            selecoes = {}
+            for col, label in Nome_colunas.items():
+                if col in df.columns:
+                    opcoes = sorted(df[col].dropna().unique().tolist())
+                    selecoes[col] = st.multiselect(label, options=opcoes)
+            st.form_submit_button("Aplicar Filtros")
+
+        df_f = df.copy()
+        for col, val in selecoes.items():
+            if val: df_f = df_f[df_f[col].isin(val)]
+
+        # KPIs e Mapa
+        st.title("📍 Mapeamento Geográfico RDSL")
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Unidades", len(df_f))
+        otd_medio = pd.to_numeric(df_f['OTD C'], errors='coerce').mean() * 100
+        c2.metric("OTD Médio", f"{otd_medio:.1f}%")
+        c3.metric("Reformas", len(df_f[df_f['STATUS_ESTRATEGICO'] == "Reforma Programada (2026)"]))
+
+        fig = px.scatter_mapbox(
+            df_f, lat="Latitude", lon="Longitude", color="STATUS_ESTRATEGICO",
+            hover_name="TX_NOME", hover_data=["OTD_FORMATADO", "TX_MUNICIPIO"],
+            zoom=4, height=750, mapbox_style="carto-positron"
+        )
+        fig.update_traces(marker=dict(size=14))
+        st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Erro ao processar: {e}")
+else:
+    st.info("Aguardando upload da planilha...")
+`
+        },
+      }, document.getElementById("root"));
+    </script>
+  </body>
+</html>
